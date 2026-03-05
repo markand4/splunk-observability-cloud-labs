@@ -109,7 +109,7 @@ message, and disconnect will generate traces and metrics.
 
 Below is an example of what a WebSocket trace looks like in Splunk Observability Cloud APM after running the traffic generator:
 
-![Splunk APM Trace Waterfall](images/splunk-apm-trace-example.png)
+![Splunk APM Trace Waterfall](images/trace-example.png)
 
 **What you're seeing:**
 
