@@ -36,6 +36,7 @@ use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::trace::SdkTracerProvider;
 use opentelemetry_sdk::Resource;
 use rand::Rng;
+use reqwest::blocking::Client as BlockingClient;
 use tokio::net::TcpListener;
 
 // ─── Configuration ───────────────────────────────────────────────────
@@ -103,8 +104,10 @@ fn build_resource(config: &SplunkConfig) -> Resource {
 }
 
 fn init_tracer_provider(config: &SplunkConfig, resource: Resource) -> SdkTracerProvider {
+    let http_client = BlockingClient::new();
     let exporter = SpanExporter::builder()
         .with_http()
+        .with_http_client(http_client)
         .with_endpoint(&config.traces_endpoint())
         .with_headers(config.headers())
         .build()
@@ -117,8 +120,10 @@ fn init_tracer_provider(config: &SplunkConfig, resource: Resource) -> SdkTracerP
 }
 
 fn init_meter_provider(config: &SplunkConfig, resource: Resource) -> SdkMeterProvider {
+    let http_client = BlockingClient::new();
     let exporter = MetricExporter::builder()
         .with_http()
+        .with_http_client(http_client)
         .with_endpoint(&config.metrics_endpoint())
         .with_headers(config.headers())
         .build()
@@ -285,8 +290,7 @@ fn parse_sides(query: Option<&str>) -> u32 {
 
 // ─── Main ────────────────────────────────────────────────────────────
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Load .env from repo root (two levels up) or current dir
     let root_env = std::path::PathBuf::from("../../.env");
     if root_env.exists() {
@@ -306,7 +310,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let resource = build_resource(&config);
 
-    // Initialize tracing
+    // Initialize tracing (MUST happen before Tokio runtime starts,
+    // because the blocking reqwest client creates its own internal runtime)
     let tracer_provider = init_tracer_provider(&config, resource.clone());
     global::set_tracer_provider(tracer_provider.clone());
     println!("✅ Traces exporter configured → {}", config.traces_endpoint());
@@ -319,24 +324,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         config.metrics_endpoint()
     );
 
-    // Start HTTP server
-    let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
-    let listener = TcpListener::bind(addr).await?;
-    println!("🎲 Rust Dice Server listening on http://{}", addr);
-    println!("   Try: curl http://localhost:8080/rolldice");
-    println!("         curl http://localhost:8080/rolldice?sides=20");
+    // Now start the Tokio runtime for the HTTP server
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        let addr = SocketAddr::from(([0, 0, 0, 0], 8080));
+        let listener = TcpListener::bind(addr).await.unwrap();
+        println!("🎲 Rust Dice Server listening on http://{}", addr);
+        println!("   Try: curl http://localhost:8080/rolldice");
+        println!("         curl \"http://localhost:8080/rolldice?sides=20\"");
 
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let io = TokioIo::new(stream);
+        loop {
+            let (stream, _) = listener.accept().await.unwrap();
+            let io = TokioIo::new(stream);
 
-        tokio::task::spawn(async move {
-            if let Err(err) = http1::Builder::new()
-                .serve_connection(io, service_fn(handle))
-                .await
-            {
-                eprintln!("Error serving connection: {:?}", err);
-            }
-        });
-    }
+            tokio::task::spawn(async move {
+                if let Err(err) = http1::Builder::new()
+                    .serve_connection(io, service_fn(handle))
+                    .await
+                {
+                    eprintln!("Error serving connection: {:?}", err);
+                }
+            });
+        }
+    })
 }

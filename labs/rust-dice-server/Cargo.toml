@@ -23,7 +23,12 @@ opentelemetry = "0.28"
 opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
 
 # OTLP exporter over HTTP (protobuf) — required for Splunk direct ingest
-opentelemetry-otlp = { version = "0.28", features = ["http-proto", "reqwest-client", "trace", "metrics"] }
+# Use reqwest-blocking-client (not reqwest-client) because the SDK's background
+# export threads don't have a Tokio runtime — async reqwest panics there.
+opentelemetry-otlp = { version = "0.28", features = ["http-proto", "reqwest-blocking-client", "trace", "metrics"] }
+
+# Blocking HTTP client (needed explicitly for the OTLP HTTP exporter)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "blocking"] }
 
 # Semantic conventions
 opentelemetry-semantic-conventions = "0.28"
