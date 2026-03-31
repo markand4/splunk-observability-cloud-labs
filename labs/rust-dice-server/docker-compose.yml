@@ -1,0 +1,13 @@
+version: "3.9"
+
+services:
+  dice-server:
+    build: .
+    ports:
+      - "8080:8080"
+    env_file:
+      - ../../.env
+    environment:
+      - OTEL_SERVICE_NAME=rust-dice-server
+      - OTEL_ENVIRONMENT=demo
+    restart: unless-stopped

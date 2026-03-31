@@ -33,7 +33,7 @@
 
 WebSocket connections are **long-lived, bidirectional, and stateful** — fundamentally different from HTTP request/response. Standard OpenTelemetry auto-instrumentation for FastAPI covers HTTP routes but **does not instrument WebSocket frames**. This guide shows how to build full observability for FastAPI WebSocket applications and export telemetry to Splunk Observability Cloud.
 
-**Full working example:** [github.com/markand4/FastAPPSplunkObservabilityCloudExample](https://github.com/markand4/FastAPPSplunkObservabilityCloudExample)
+**Full working example:** [github.com/markand4/splunk-observability-cloud-labs](https://github.com/markand4/splunk-observability-cloud-labs/tree/main/labs/python-fastapi-websocket)
 
 ---
 
@@ -346,7 +346,9 @@ OTEL_ENVIRONMENT=demo
 source .venv/bin/activate
 
 # Export environment variables
-export $(grep -v '^#' .env | xargs)
+export $(grep -v '^#' ../../.env | xargs)
+export OTEL_SERVICE_NAME=fastapi-websocket-demo
+export OTEL_ENVIRONMENT=demo
 
 # Start the server
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -500,7 +502,7 @@ If you see MTS (Metric Time Series) warnings:
 
 After running the application with the traffic generator, here is what the trace waterfall looks like in Splunk Observability Cloud APM:
 
-![Splunk APM Trace Waterfall — WebSocket Session](https://raw.githubusercontent.com/markand4/FastAPPSplunkObservabilityCloudExample/main/images/trace-example.png)
+![Splunk APM Trace Waterfall — WebSocket Session](https://raw.githubusercontent.com/markand4/splunk-observability-cloud-labs/main/labs/python-fastapi-websocket/images/trace-example.png)
 
 **What you're seeing:**
 - The **root span** `HTTP /ws/{client_id}` represents the full WebSocket session (34 seconds)
@@ -535,7 +537,7 @@ After running the application with the traffic generator, here is what the trace
 - [Starlette WebSocket Reference](https://www.starlette.io/websockets/)
 
 ### Example Repository
-- **Full working code:** [github.com/markand4/FastAPPSplunkObservabilityCloudExample](https://github.com/markand4/FastAPPSplunkObservabilityCloudExample)
+- **Full working code:** [github.com/markand4/splunk-observability-cloud-labs](https://github.com/markand4/splunk-observability-cloud-labs/tree/main/labs/python-fastapi-websocket)
 
 ---
 

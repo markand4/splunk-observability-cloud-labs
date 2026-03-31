@@ -1,0 +1,32 @@
+# Based on the OpenTelemetry Rust Getting Started example:
+#   https://opentelemetry.io/docs/languages/rust/getting-started/
+# Original example code licensed under Apache 2.0 by the OpenTelemetry Authors.
+# Modified to export to Splunk Observability Cloud via OTLP/HTTP.
+
+[package]
+name = "dice_server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# HTTP server
+hyper = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
+http-body-util = "0.1"
+hyper-util = { version = "0.1", features = ["full"] }
+
+# Random dice
+rand = "0.9"
+
+# OpenTelemetry core
+opentelemetry = "0.28"
+opentelemetry_sdk = { version = "0.28", features = ["rt-tokio"] }
+
+# OTLP exporter over HTTP (protobuf) — required for Splunk direct ingest
+opentelemetry-otlp = { version = "0.28", features = ["http-proto", "reqwest-client", "trace", "metrics"] }
+
+# Semantic conventions
+opentelemetry-semantic-conventions = "0.28"
+
+# For reading .env file
+dotenvy = "0.15"

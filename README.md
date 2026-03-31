@@ -1,174 +1,121 @@
-# FastAPI WebSocket Demo with OpenTelemetry → Splunk Observability Cloud
+# Splunk Observability Cloud Labs
 
-A ready-to-run Python application that demonstrates **WebSocket** communication
-with [FastAPI](https://fastapi.tiangolo.com/) fully instrumented with
-[OpenTelemetry](https://opentelemetry.io/), exporting **traces and metrics** to
-[Splunk Observability Cloud](https://www.splunk.com/en_us/products/observability.html).
+A collection of hands-on labs demonstrating **OpenTelemetry** instrumentation across different languages and frameworks, all exporting **traces and metrics** to [Splunk Observability Cloud](https://www.splunk.com/en_us/products/observability.html).
 
 ---
 
-## What's Inside
+## Labs
 
-| File | Purpose |
-|---|---|
-| `app/main.py` | FastAPI application with HTTP + WebSocket endpoints |
-| `app/otel_config.py` | OpenTelemetry tracer & meter setup targeting Splunk O11y Cloud |
-| `app/websocket_manager.py` | Connection manager with per-operation spans & custom metrics |
-| `app/templates/index.html` | Browser-based chat UI (no build step needed) |
-| `.env.example` | Template for required environment variables |
-| `Dockerfile` / `docker-compose.yml` | Container-ready deployment |
+| # | Lab | Language | Framework | What You'll Learn |
+|---|-----|----------|-----------|-------------------|
+| 1 | [Python — FastAPI WebSocket Chat](labs/python-fastapi-websocket/) | Python | FastAPI, Uvicorn | Manual WebSocket span instrumentation, custom metrics (UpDownCounter, Histogram), OTLP/HTTP export to Splunk |
+| 2 | [Rust — Dice Server](labs/rust-dice-server/) | Rust | Hyper (tokio) | OTEL tracing + metrics in Rust, OTLP/HTTP export to Splunk, custom span attributes |
 
 ---
 
-## Telemetry Emitted
+## Shared Setup
 
-### Traces (Spans)
+All labs share the same Splunk Observability Cloud credentials via a single `.env` file at the repo root.
 
-Every WebSocket lifecycle event creates a span:
-
-| Span Name | Triggered When |
-|---|---|
-| `websocket.connect` | Client opens a WebSocket |
-| `websocket.disconnect` | Client disconnects |
-| `websocket.receive` | Server receives a message |
-| `websocket.send_personal` | Server sends to one client |
-| `websocket.broadcast` | Server broadcasts to all clients |
-
-All HTTP routes (`/`, `/health`) are auto-instrumented by `opentelemetry-instrumentation-fastapi`.
-
-### Metrics
-
-| Metric | Type | Description |
-|---|---|---|
-| `websocket.connections.active` | UpDownCounter | Current number of open connections |
-| `websocket.connections.total` | Counter | Cumulative connections since startup |
-| `websocket.messages.sent` | Counter | Total messages sent |
-| `websocket.messages.received` | Counter | Total messages received |
-| `websocket.message.latency_ms` | Histogram | Broadcast processing time (ms) |
-| `websocket.errors` | Counter | Errors during send/receive |
-
----
-
-## Quick Start
-
-### Prerequisites
-
-- Python 3.10+
-- A [Splunk Observability Cloud](https://www.splunk.com/en_us/products/observability.html) account
-- A **Splunk Ingest Token** (Settings → Access Tokens → create one with *ingest* scope)
-
-### 1. Clone & install
+### 1. Clone the repo
 
 ```bash
-cd "Web Socket OTEL Example using Fast API Python"
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+git clone https://github.com/markand4/splunk-observability-cloud-labs.git
+cd splunk-observability-cloud-labs
 ```
 
-### 2. Configure environment
+### 2. Configure credentials
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and fill in your real values:
+Edit `.env`:
 
 ```dotenv
 SPLUNK_ACCESS_TOKEN=<your-ingest-token>
-SPLUNK_REALM=us0          # change to your realm (us0, us1, eu0, etc.)
-OTEL_SERVICE_NAME=fastapi-websocket-demo
-OTEL_ENVIRONMENT=demo
+SPLUNK_REALM=us1
 ```
 
-### 3. Run the app
+> **Get your token:** Splunk O11y Cloud → Settings → Access Tokens → Create with **ingest** scope.
 
-```bash
-# Source the env file
-export $(grep -v '^#' .env | xargs)
+### 3. Pick a lab and follow its README
 
-# Start the server
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-### 4. Open the chat UI
-
-Navigate to **http://localhost:8000** in your browser.  
-Open **multiple tabs** to simulate multiple chat participants — every connect,
-message, and disconnect will generate traces and metrics.
-
-### 5. Check Splunk O11y Cloud
-
-- **APM → Traces**: Look for the service `fastapi-websocket-demo`. You'll see
-  spans for WebSocket connect/disconnect/broadcast and HTTP requests.
-- **Infrastructure → Metrics**: Search for `websocket.connections.active`,
-  `websocket.messages.sent`, etc. to build dashboards.
+Each lab directory has its own `README.md` with setup instructions and a `confluence-page.md` with detailed best practices.
 
 ---
 
-## Example Trace in Splunk APM
+## Repository Structure
 
-Below is an example of what a WebSocket trace looks like in Splunk Observability Cloud APM after running the traffic generator:
-
-![Splunk APM Trace Waterfall](images/trace-example.png)
-
-**What you're seeing:**
-
-- The root span `HTTP /ws/{client_id}` represents the full WebSocket session (34s in this example)
-- Child spans show the lifecycle: `websocket.connect` → `websocket.receive` → `websocket.broadcast` (repeating for each message)
-- Each `websocket.broadcast` includes nested `websocket send` spans — one per connected client
-- Span tags include `http.route`, `http.scheme: ws`, `http.host`, and `http.response.status_code`
-- 155 spans were captured in a single trace, giving full visibility into every message exchange
-
----
-
-## Run with Docker
-
-```bash
-# Build and start
-docker compose up --build
-
-# Or manually
-docker build -t fastapi-ws-otel .
-docker run --env-file .env -p 8000:8000 fastapi-ws-otel
+```
+splunk-observability-cloud-labs/
+├── .env.example                          # Shared Splunk credentials template
+├── .env                                  # Your credentials (gitignored)
+├── README.md                             # This file
+├── LICENSE
+└── labs/
+    ├── python-fastapi-websocket/         # Lab 1: Python WebSocket + OTEL
+    │   ├── README.md
+    │   ├── confluence-page.md
+    │   ├── app/
+    │   ├── requirements.txt
+    │   ├── traffic_generator.py
+    │   ├── Dockerfile & docker-compose.yml
+    │   └── images/
+    └── rust-dice-server/                 # Lab 2: Rust Dice Server + OTEL
+        ├── README.md
+        ├── confluence-page.md
+        ├── Cargo.toml
+        ├── src/main.rs
+        ├── Dockerfile & docker-compose.yml
+        └── images/
 ```
 
 ---
 
-## Architecture Overview
+## What Is Splunk Observability Cloud?
 
-```
-┌──────────────┐   WebSocket (ws://)   ┌──────────────────────┐
-│  Browser Tab  │◄────────────────────►│   FastAPI + Uvicorn   │
-│  (Chat UI)    │                       │                      │
-└──────────────┘                       │  ┌──────────────────┐ │
-                                        │  │ Connection Mgr   │ │
-┌──────────────┐   WebSocket (ws://)   │  │  (spans+metrics) │ │
-│  Browser Tab  │◄────────────────────►│  └────────┬─────────┘ │
-│  (Chat UI)    │                       │           │           │
-└──────────────┘                       │  ┌────────▼─────────┐ │
-                                        │  │ OTEL SDK         │ │
-                                        │  │ TracerProvider    │ │
-                                        │  │ MeterProvider     │ │
-                                        │  └────────┬─────────┘ │
-                                        └───────────┼───────────┘
-                                                    │ OTLP/gRPC
-                                        ┌───────────▼───────────┐
-                                        │  Splunk Observability  │
-                                        │  Cloud (APM + Metrics) │
-                                        └────────────────────────┘
-```
+[Splunk Observability Cloud](https://www.splunk.com/en_us/products/observability.html) provides full-stack observability powered by OpenTelemetry:
+
+- **APM** — Distributed traces, service maps, error tracking
+- **Infrastructure Monitoring** — Metrics dashboards, host/container views
+- **Real User Monitoring** — Front-end performance
+- **Synthetics** — Proactive uptime monitoring
+- **Log Observer** — Correlated logs with traces
+
+These labs focus on **APM + Metrics** via the OpenTelemetry SDK, exporting over **OTLP/HTTP** directly to Splunk ingest endpoints.
 
 ---
 
-## Customization Tips
+## Key Patterns Across All Labs
 
-| Want to… | Do this |
-|---|---|
-| Change export interval | Edit `export_interval_millis` in `otel_config.py` |
-| Use HTTP instead of gRPC | Swap `otlp.proto.grpc` imports for `otlp.proto.http` in `otel_config.py` |
-| Add more custom metrics | Create new instruments in `websocket_manager.py` using the `meter` |
-| Test without Splunk | Remove `SPLUNK_ACCESS_TOKEN`; telemetry stays local (logged warnings) |
-| Add database tracing | `pip install opentelemetry-instrumentation-sqlalchemy` and call `SQLAlchemyInstrumentor().instrument()` |
+| Pattern | Details |
+|---------|---------|
+| **OTLP/HTTP (not gRPC)** | Splunk direct ingest doesn't support OTLP/gRPC. All labs use OTLP/HTTP with protobuf. |
+| **Splunk ingest endpoints** | Traces: `https://ingest.{realm}.signalfx.com/v2/trace/otlp` — Metrics: `https://ingest.{realm}.signalfx.com/v2/datapoint/otlp` |
+| **X-SF-TOKEN header** | All requests authenticated with your Splunk ingest token |
+| **deployment.environment** | Set on the OTEL Resource so Splunk APM groups services by environment |
+| **Service name** | Each lab uses a unique `OTEL_SERVICE_NAME` so services appear separately in APM |
+
+---
+
+## Adding a New Lab
+
+1. Create a new directory under `labs/` (e.g., `labs/go-http-server/`)
+2. Add a `README.md` with quick-start instructions
+3. Add a `confluence-page.md` with detailed best practices
+4. Read credentials from the root `.env` (or `../../.env`)
+5. Update this root README's lab table
+
+---
+
+## Attribution
+
+Some labs in this collection are based on official OpenTelemetry examples. Full attribution is provided in each lab's README and source files.
+
+| Lab | Original Source | License |
+|-----|----------------|---------|
+| Rust — Dice Server | [OpenTelemetry Rust Getting Started](https://opentelemetry.io/docs/languages/rust/getting-started/) | Apache 2.0 |
 
 ---
 

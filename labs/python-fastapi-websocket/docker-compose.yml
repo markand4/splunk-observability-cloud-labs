@@ -6,7 +6,7 @@ services:
     ports:
       - "8000:8000"
     env_file:
-      - .env
+      - ../../.env
     environment:
       - OTEL_SERVICE_NAME=fastapi-websocket-demo
       - OTEL_ENVIRONMENT=demo

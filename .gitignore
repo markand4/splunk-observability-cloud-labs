@@ -1,7 +1,10 @@
+# Credentials (never commit)
+.env
+
+# Python
 __pycache__/
 *.pyc
 *.pyo
-.env
 .venv/
 venv/
 *.egg-info/
@@ -9,3 +12,14 @@ dist/
 build/
 .mypy_cache/
 .pytest_cache/
+
+# Rust
+target/
+Cargo.lock
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
