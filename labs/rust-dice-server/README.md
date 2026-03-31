@@ -54,11 +54,33 @@ From the repo root:
 cp .env.example .env
 ```
 
-Edit `.env`:
+Edit `.env` — choose **one** of the two export modes:
+
+#### Option A: OTEL Collector Gateway (recommended)
+
+Route telemetry through an OTEL Collector that handles authentication and forwarding to Splunk:
+
+```dotenv
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+# No SPLUNK_ACCESS_TOKEN needed on the app — the collector handles auth
+```
+
+#### Option B: Direct to Splunk Ingest
+
+Send telemetry straight from the app to Splunk (requires access token):
 
 ```dotenv
 SPLUNK_ACCESS_TOKEN=<your-ingest-token>
 SPLUNK_REALM=us1
+```
+
+#### Resource Attributes
+
+Add any required resource attributes via the standard OTEL env var. These are attached to **every span and metric**:
+
+```dotenv
+OTEL_RESOURCE_ATTRIBUTES=team.name=platform,app.tier=backend,region=us-east-1
+OTEL_ENVIRONMENT=demo
 ```
 
 ### 2. Build and run
@@ -68,14 +90,23 @@ cd labs/rust-dice-server
 cargo run
 ```
 
-You should see:
+Collector gateway mode output:
 
 ```
+📡 Collector gateway mode → http://otel-collector:4318
+📋 Custom resource attributes: team.name=platform,app.tier=backend,region=us-east-1
+✅ Traces exporter configured → http://otel-collector:4318/v1/traces
+✅ Metrics exporter configured → http://otel-collector:4318/v1/metrics
+🎲 Rust Dice Server listening on http://0.0.0.0:8080
+```
+
+Direct Splunk ingest mode output:
+
+```
+📡 Direct Splunk ingest mode (realm: us1)
 ✅ Traces exporter configured → https://ingest.us1.signalfx.com/v2/trace/otlp
 ✅ Metrics exporter configured → https://ingest.us1.signalfx.com/v2/datapoint/otlp
 🎲 Rust Dice Server listening on http://0.0.0.0:8080
-   Try: curl http://localhost:8080/rolldice
-         curl http://localhost:8080/rolldice?sides=20
 ```
 
 ### 3. Generate traffic
@@ -130,10 +161,21 @@ docker run --env-file ../../.env -p 8080:8080 rust-dice-otel
                                      │  └──────────┬───────────┘ │
                                      └─────────────┼─────────────┘
                                                    │ OTLP/HTTP
-                                     ┌─────────────▼─────────────┐
-                                     │  Splunk Observability      │
-                                     │  Cloud (APM + Metrics)     │
-                                     └────────────────────────────┘
+                              ┌────────────────────┼────────────────────┐
+                              │ Option A            │ Option B           │
+                              │                     │                    │
+                    ┌─────────▼──────────┐  ┌───────▼────────────┐       │
+                    │  OTEL Collector     │  │  Splunk Ingest     │       │
+                    │  Gateway            │  │  (direct)          │       │
+                    │  :4318              │  │  X-SF-TOKEN auth   │       │
+                    └─────────┬──────────┘  └───────┬────────────┘       │
+                              │                     │                    │
+                              └──────────┬──────────┘                    │
+                              ┌──────────▼──────────┐                    │
+                              │  Splunk O11y Cloud   │                   │
+                              │  (APM + Metrics)     │                   │
+                              └─────────────────────┘                    │
+                              └─────────────────────────────────────────┘
 ```
 
 ---
@@ -142,10 +184,13 @@ docker run --env-file ../../.env -p 8080:8080 rust-dice-otel
 
 | Want to… | Do this |
 |---|---|
+| Route through a collector | Set `OTEL_EXPORTER_OTLP_ENDPOINT=http://collector:4318` in `.env` |
+| Add required resource attributes | Set `OTEL_RESOURCE_ATTRIBUTES=key1=val1,key2=val2` in `.env` |
+| Override service name at deploy time | Set `OTEL_SERVICE_NAME=my-service` in `.env` |
 | Change the port | Edit `SocketAddr::from(([0, 0, 0, 0], 8080))` in `main.rs` |
 | Change export interval | Edit `with_interval(Duration::from_secs(10))` in `init_meter_provider` |
 | Add more endpoints | Add match arms in the `handle` function |
-| Test without Splunk | Remove `SPLUNK_ACCESS_TOKEN`; spans/metrics won't export (warning shown) |
+| Test without any backend | Omit both `OTEL_EXPORTER_OTLP_ENDPOINT` and `SPLUNK_ACCESS_TOKEN` (warning shown) |
 
 ---
 

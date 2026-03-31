@@ -44,43 +44,70 @@ use tokio::net::TcpListener;
 const SERVICE_NAME: &str = "rust-dice-server";
 const SERVICE_VERSION: &str = "1.0.0";
 
-/// Read Splunk creds from environment variables
-struct SplunkConfig {
+/// Telemetry export mode:
+/// - **Collector Gateway:** Set `OTEL_EXPORTER_OTLP_ENDPOINT` to your collector
+///   (e.g. `http://otel-collector:4318`). No access token needed on the app —
+///   the collector handles authentication and routing to Splunk.
+/// - **Direct to Splunk:** Omit `OTEL_EXPORTER_OTLP_ENDPOINT` and set
+///   `SPLUNK_ACCESS_TOKEN` + `SPLUNK_REALM`. The app sends directly to Splunk
+///   ingest endpoints with `X-SF-TOKEN` auth.
+struct ExportConfig {
     token: String,
     realm: String,
     environment: String,
+    /// When set, all OTLP goes to this collector; Splunk-specific headers are skipped.
+    collector_endpoint: Option<String>,
 }
 
-impl SplunkConfig {
+impl ExportConfig {
     fn from_env() -> Self {
+        let collector_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
         Self {
             token: std::env::var("SPLUNK_ACCESS_TOKEN").unwrap_or_default(),
             realm: std::env::var("SPLUNK_REALM").unwrap_or_else(|_| "us0".to_string()),
             environment: std::env::var("OTEL_ENVIRONMENT").unwrap_or_else(|_| "demo".to_string()),
+            collector_endpoint,
         }
     }
 
+    /// Returns true when routing through a collector gateway.
+    fn uses_collector(&self) -> bool {
+        self.collector_endpoint.is_some()
+    }
+
     fn traces_endpoint(&self) -> String {
-        std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT").unwrap_or_else(|_| {
-            format!(
-                "https://ingest.{}.signalfx.com/v2/trace/otlp",
-                self.realm
-            )
-        })
+        // Per-signal override takes priority
+        if let Ok(ep) = std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") {
+            return ep;
+        }
+        // Collector gateway — standard OTLP path
+        if let Some(ref base) = self.collector_endpoint {
+            return format!("{}/v1/traces", base.trim_end_matches('/'));
+        }
+        // Fallback: Splunk direct ingest
+        format!(
+            "https://ingest.{}.signalfx.com/v2/trace/otlp",
+            self.realm
+        )
     }
 
     fn metrics_endpoint(&self) -> String {
-        std::env::var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT").unwrap_or_else(|_| {
-            format!(
-                "https://ingest.{}.signalfx.com/v2/datapoint/otlp",
-                self.realm
-            )
-        })
+        if let Ok(ep) = std::env::var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") {
+            return ep;
+        }
+        if let Some(ref base) = self.collector_endpoint {
+            return format!("{}/v1/metrics", base.trim_end_matches('/'));
+        }
+        format!(
+            "https://ingest.{}.signalfx.com/v2/datapoint/otlp",
+            self.realm
+        )
     }
 
+    /// Headers for Splunk direct ingest; empty when using a collector gateway.
     fn headers(&self) -> HashMap<String, String> {
         let mut h = HashMap::new();
-        if !self.token.is_empty() {
+        if !self.uses_collector() && !self.token.is_empty() {
             h.insert("X-SF-TOKEN".to_string(), self.token.clone());
         }
         h
@@ -89,21 +116,52 @@ impl SplunkConfig {
 
 // ─── OpenTelemetry Setup ─────────────────────────────────────────────
 
-fn build_resource(config: &SplunkConfig) -> Resource {
-    Resource::builder()
+/// Build the OTEL Resource with standard + custom attributes.
+///
+/// Fixed attributes set in code:
+///   - `service.name`              (from SERVICE_NAME const)
+///   - `service.version`           (from SERVICE_VERSION const)
+///   - `deployment.environment`    (from OTEL_ENVIRONMENT env var)
+///
+/// Additional / required attributes can be injected at deploy time
+/// via the standard OTEL env var:
+///
+///   OTEL_RESOURCE_ATTRIBUTES="team.name=platform,app.tier=backend,region=us-east-1"
+///
+/// The format is comma-separated `key=value` pairs. Any attributes
+/// defined here will be attached to **every span and metric** exported
+/// by this service.
+fn build_resource(config: &ExportConfig) -> Resource {
+    let mut builder = Resource::builder()
         .with_attribute(KeyValue::new(
             opentelemetry_semantic_conventions::attribute::SERVICE_NAME,
-            SERVICE_NAME,
+            std::env::var("OTEL_SERVICE_NAME").unwrap_or_else(|_| SERVICE_NAME.to_string()),
         ))
         .with_attribute(KeyValue::new("service.version", SERVICE_VERSION))
         .with_attribute(KeyValue::new(
             "deployment.environment",
             config.environment.clone(),
-        ))
-        .build()
+        ));
+
+    // ── Custom resource attributes from OTEL_RESOURCE_ATTRIBUTES ──
+    // Format: key1=value1,key2=value2,...
+    if let Ok(attrs) = std::env::var("OTEL_RESOURCE_ATTRIBUTES") {
+        for pair in attrs.split(',') {
+            let pair = pair.trim();
+            if let Some((key, value)) = pair.split_once('=') {
+                let key = key.trim().to_string();
+                let value = value.trim().to_string();
+                if !key.is_empty() {
+                    builder = builder.with_attribute(KeyValue::new(key, value));
+                }
+            }
+        }
+    }
+
+    builder.build()
 }
 
-fn init_tracer_provider(config: &SplunkConfig, resource: Resource) -> SdkTracerProvider {
+fn init_tracer_provider(config: &ExportConfig, resource: Resource) -> SdkTracerProvider {
     let http_client = BlockingClient::new();
     let exporter = SpanExporter::builder()
         .with_http()
@@ -119,7 +177,7 @@ fn init_tracer_provider(config: &SplunkConfig, resource: Resource) -> SdkTracerP
         .build()
 }
 
-fn init_meter_provider(config: &SplunkConfig, resource: Resource) -> SdkMeterProvider {
+fn init_meter_provider(config: &ExportConfig, resource: Resource) -> SdkMeterProvider {
     let http_client = BlockingClient::new();
     let exporter = MetricExporter::builder()
         .with_http()
@@ -299,16 +357,29 @@ fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         dotenvy::dotenv().ok();
     }
 
-    let config = SplunkConfig::from_env();
+    let config = ExportConfig::from_env();
 
-    if config.token.is_empty() {
-        eprintln!(
-            "⚠️  SPLUNK_ACCESS_TOKEN not set — telemetry will NOT reach Splunk O11y Cloud.\n   \
-             Set it in ../../.env or as an environment variable."
+    // ── Validate export configuration ──
+    if config.uses_collector() {
+        println!(
+            "📡 Collector gateway mode → {}",
+            config.collector_endpoint.as_deref().unwrap_or("")
         );
+    } else if config.token.is_empty() {
+        eprintln!(
+            "⚠️  SPLUNK_ACCESS_TOKEN not set and no OTEL_EXPORTER_OTLP_ENDPOINT configured.\n   \
+             Telemetry will NOT reach any backend.\n   \
+             Set OTEL_EXPORTER_OTLP_ENDPOINT for collector mode, or SPLUNK_ACCESS_TOKEN for direct ingest."
+        );
+    } else {
+        println!("📡 Direct Splunk ingest mode (realm: {})", config.realm);
     }
 
+    // ── Show resource attributes ──
     let resource = build_resource(&config);
+    if let Ok(attrs) = std::env::var("OTEL_RESOURCE_ATTRIBUTES") {
+        println!("📋 Custom resource attributes: {}", attrs);
+    }
 
     // Initialize tracing (MUST happen before Tokio runtime starts,
     // because the blocking reqwest client creates its own internal runtime)

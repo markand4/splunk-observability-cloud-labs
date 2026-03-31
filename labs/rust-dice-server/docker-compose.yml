@@ -10,4 +10,23 @@ services:
     environment:
       - OTEL_SERVICE_NAME=rust-dice-server
       - OTEL_ENVIRONMENT=demo
+      # ── Collector gateway mode (uncomment to route through a collector) ──
+      # - OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+      # ── Custom resource attributes (comma-separated key=value) ──
+      # - OTEL_RESOURCE_ATTRIBUTES=team.name=platform,app.tier=backend
     restart: unless-stopped
+    # Uncomment below if running the OTEL Collector as a sidecar
+    # depends_on:
+    #   - otel-collector
+
+  # ── Optional: OTEL Collector Gateway ─────────────────────────
+  # Uncomment this block to run a local OTEL Collector that receives
+  # telemetry from the app and forwards it to Splunk.
+  # otel-collector:
+  #   image: otel/opentelemetry-collector-contrib:latest
+  #   ports:
+  #     - "4317:4317"   # OTLP gRPC
+  #     - "4318:4318"   # OTLP HTTP
+  #   volumes:
+  #     - ./otel-collector-config.yaml:/etc/otelcol-contrib/config.yaml
+  #   restart: unless-stopped

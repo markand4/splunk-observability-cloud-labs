@@ -11,11 +11,12 @@
 - Prerequisites
 - Step-by-Step Implementation Guide
   - Step 1: Create the Rust Project
-  - Step 2: Configure OpenTelemetry for Splunk O11y Cloud
-  - Step 3: Add Custom Metrics
-  - Step 4: Instrument Request Handlers with Spans
-  - Step 5: Environment Configuration
-  - Step 6: Build, Run, and Validate
+  - Step 2: Configure Export Mode (Collector Gateway vs Direct Ingest)
+  - Step 3: Define Resource Attributes
+  - Step 4: Add Custom Metrics
+  - Step 5: Instrument Request Handlers with Spans
+  - Step 6: Environment Configuration
+  - Step 7: Build, Run, and Validate
 - Custom Metrics Reference
 - Custom Spans Reference
 - Best Practices
@@ -51,15 +52,18 @@ This lab is based on the official **OpenTelemetry Rust Getting Started** guide:
 |---|---|
 | Exports spans to **stdout** (`opentelemetry-stdout`) | Exports to **Splunk O11y Cloud** via OTLP/HTTP (`opentelemetry-otlp`) |
 | No metrics | 4 custom metrics: `dice.rolls`, `dice.roll.value`, `http.server.requests`, `http.server.request.duration` |
-| No authentication | `X-SF-TOKEN` header for Splunk ingest authentication |
-| No environment config | Reads `SPLUNK_ACCESS_TOKEN`, `SPLUNK_REALM`, `OTEL_ENVIRONMENT` from `.env` |
+| No authentication | `X-SF-TOKEN` header for Splunk direct ingest (or no auth — collector handles it) |
+| No environment config | Reads `SPLUNK_ACCESS_TOKEN`, `SPLUNK_REALM`, `OTEL_ENVIRONMENT`, `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_RESOURCE_ATTRIBUTES` from env/`.env` |
 | Fixed 6-sided die | Configurable sides via `?sides=N` query parameter |
 | Single endpoint | Added `/health` endpoint |
-| No resource attributes | Adds `deployment.environment`, `service.version` for Splunk APM grouping |
+| No resource attributes | Adds `deployment.environment`, `service.version`, plus custom attrs via `OTEL_RESOURCE_ATTRIBUTES` |
+| Sends to local collector only | Supports **two modes**: OTEL Collector gateway **or** direct Splunk ingest |
 
 ---
 
 ## Architecture
+
+The app supports **two export modes** — choose based on your environment:
 
 ```
 ┌──────────────┐     HTTP GET        ┌──────────────────────────┐
@@ -78,11 +82,24 @@ This lab is based on the official **OpenTelemetry Rust Getting Started** guide:
                                      │  └──────────┬───────────┘ │
                                      └─────────────┼─────────────┘
                                                    │ OTLP/HTTP
-                                     ┌─────────────▼─────────────┐
-                                     │  Splunk Observability      │
-                                     │  Cloud (APM + Metrics)     │
-                                     └────────────────────────────┘
+                          ┌─────────────────────┼────────────────────┐
+                          │  Option A (recommended)  │   Option B          │
+                ┌─────────▼────────────┐  ┌─────▼──────────────┐
+                │   OTEL Collector      │  │   Splunk Ingest      │
+                │   Gateway (:4318)     │  │   (direct, X-SF-TOKEN)│
+                └──────────┬───────────┘  └─────┬──────────────┘
+                           │                     │
+                           └─────────┬─────────┘
+                          ┌─────────▼────────────┐
+                          │   Splunk O11y Cloud    │
+                          │   (APM + Metrics)      │
+                          └──────────────────────┘
 ```
+
+| Mode | When to use | Env vars needed |
+|---|---|---|
+| **A — Collector Gateway** | Production, shared infrastructure, multiple services | `OTEL_EXPORTER_OTLP_ENDPOINT` |
+| **B — Direct Ingest** | Quick demos, single-service testing | `SPLUNK_ACCESS_TOKEN` + `SPLUNK_REALM` |
 
 ---
 
@@ -93,8 +110,9 @@ This lab is based on the official **OpenTelemetry Rust Getting Started** guide:
 | Rust | 1.70+ ([install](https://www.rust-lang.org/tools/install)) |
 | Cargo | Included with Rust |
 | Splunk O11y Cloud account | [Sign up](https://www.splunk.com/en_us/products/observability.html) |
-| Splunk Ingest Token | Settings → Access Tokens → create with **ingest** scope |
+| Splunk Ingest Token | **Direct mode only** — Settings → Access Tokens → create with **ingest** scope |
 | Splunk Realm | e.g., `us0`, `us1`, `eu0` (visible in your O11y Cloud URL) |
+| OTEL Collector | **Collector mode only** — running and reachable (e.g., `http://otel-collector:4318`) |
 
 ---
 
@@ -136,13 +154,32 @@ dotenvy = "0.15"
 
 > **Important:** Use the `http-proto` + `reqwest-client` features of `opentelemetry-otlp`. Splunk O11y Cloud direct ingest does **not** support OTLP/gRPC — you must use OTLP/HTTP (protobuf).
 
-### Step 2: Configure OpenTelemetry for Splunk O11y Cloud
+### Step 2: Configure Export Mode (Collector Gateway vs Direct Ingest)
 
-The key pieces are:
-1. **Build a Resource** with `service.name`, `service.version`, and `deployment.environment`
-2. **Create an OTLP/HTTP span exporter** pointing to Splunk's trace ingest endpoint
-3. **Create an OTLP/HTTP metric exporter** pointing to Splunk's metric ingest endpoint
-4. **Authenticate** with the `X-SF-TOKEN` header
+The app supports **two export modes** — choose based on your deployment:
+
+#### Option A: OTEL Collector Gateway (recommended)
+
+When routing through a collector, the app sends standard OTLP/HTTP to the collector. The **collector** is responsible for authentication, batching, and forwarding to Splunk. No access token is needed on the application.
+
+```dotenv
+# .env
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+```
+
+#### Option B: Direct to Splunk Ingest
+
+For quick demos or single-service testing, the app can send directly to Splunk's ingest endpoints with `X-SF-TOKEN` authentication:
+
+```dotenv
+# .env
+SPLUNK_ACCESS_TOKEN=<your-ingest-token>
+SPLUNK_REALM=us1
+```
+
+#### How it works in code
+
+The `ExportConfig` struct reads from environment and selects the mode automatically:
 
 ```rust
 use opentelemetry_otlp::{SpanExporter, MetricExporter, WithExportConfig, WithHttpConfig};
@@ -151,39 +188,59 @@ use opentelemetry_sdk::metrics::{PeriodicReader, SdkMeterProvider};
 use opentelemetry_sdk::Resource;
 use opentelemetry::KeyValue;
 
-struct SplunkConfig {
+struct ExportConfig {
     token: String,
     realm: String,
     environment: String,
+    collector_endpoint: Option<String>,  // When set, use collector mode
 }
 
-impl SplunkConfig {
+impl ExportConfig {
     fn from_env() -> Self {
+        let collector_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok();
         Self {
             token: std::env::var("SPLUNK_ACCESS_TOKEN").unwrap_or_default(),
             realm: std::env::var("SPLUNK_REALM").unwrap_or_else(|_| "us0".into()),
             environment: std::env::var("OTEL_ENVIRONMENT").unwrap_or_else(|_| "demo".into()),
+            collector_endpoint,
         }
     }
 
+    fn uses_collector(&self) -> bool {
+        self.collector_endpoint.is_some()
+    }
+
     fn traces_endpoint(&self) -> String {
+        if let Ok(ep) = std::env::var("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") {
+            return ep;
+        }
+        if let Some(ref base) = self.collector_endpoint {
+            return format!("{}/v1/traces", base.trim_end_matches('/'));
+        }
         format!("https://ingest.{}.signalfx.com/v2/trace/otlp", self.realm)
     }
 
     fn metrics_endpoint(&self) -> String {
+        if let Ok(ep) = std::env::var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT") {
+            return ep;
+        }
+        if let Some(ref base) = self.collector_endpoint {
+            return format!("{}/v1/metrics", base.trim_end_matches('/'));
+        }
         format!("https://ingest.{}.signalfx.com/v2/datapoint/otlp", self.realm)
     }
 
+    /// Headers for Splunk direct ingest; empty when using a collector.
     fn headers(&self) -> HashMap<String, String> {
         let mut h = HashMap::new();
-        if !self.token.is_empty() {
+        if !self.uses_collector() && !self.token.is_empty() {
             h.insert("X-SF-TOKEN".into(), self.token.clone());
         }
         h
     }
 }
 
-fn init_tracer_provider(config: &SplunkConfig, resource: Resource) -> SdkTracerProvider {
+fn init_tracer_provider(config: &ExportConfig, resource: Resource) -> SdkTracerProvider {
     let exporter = SpanExporter::builder()
         .with_http()
         .with_endpoint(&config.traces_endpoint())
@@ -197,7 +254,7 @@ fn init_tracer_provider(config: &SplunkConfig, resource: Resource) -> SdkTracerP
         .build()
 }
 
-fn init_meter_provider(config: &SplunkConfig, resource: Resource) -> SdkMeterProvider {
+fn init_meter_provider(config: &ExportConfig, resource: Resource) -> SdkMeterProvider {
     let exporter = MetricExporter::builder()
         .with_http()
         .with_endpoint(&config.metrics_endpoint())
@@ -216,13 +273,84 @@ fn init_meter_provider(config: &SplunkConfig, resource: Resource) -> SdkMeterPro
 }
 ```
 
-**Key points:**
-- Use `https://ingest.{realm}.signalfx.com/v2/trace/otlp` for traces
-- Use `https://ingest.{realm}.signalfx.com/v2/datapoint/otlp` for metrics
-- `.with_http()` — selects OTLP/HTTP transport (not gRPC)
-- `.with_headers()` — attaches `X-SF-TOKEN` for Splunk authentication
+**Endpoint resolution priority:**
+1. Per-signal override: `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` / `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT`
+2. Collector gateway: `OTEL_EXPORTER_OTLP_ENDPOINT` + standard `/v1/traces`, `/v1/metrics` paths
+3. Splunk direct ingest: `https://ingest.{realm}.signalfx.com/v2/trace/otlp` (and `/v2/datapoint/otlp`)
 
-### Step 3: Add Custom Metrics
+**Key difference:** When using a collector, the `X-SF-TOKEN` header is **not** sent — the collector's own config handles Splunk authentication.
+
+### Step 3: Define Resource Attributes
+
+Resource attributes are key-value pairs attached to **every span and metric** your service emits. They identify _what_ is producing telemetry and are critical for filtering in Splunk APM.
+
+#### Built-in attributes (set in code)
+
+These are always present:
+
+| Attribute | Source | Purpose |
+|---|---|---|
+| `service.name` | `OTEL_SERVICE_NAME` env var, or `"rust-dice-server"` default | Identifies the service in APM |
+| `service.version` | Hardcoded `"1.0.0"` | Tracks deployments |
+| `deployment.environment` | `OTEL_ENVIRONMENT` env var, or `"demo"` default | Splunk APM uses this to separate dev/staging/prod |
+
+#### Custom attributes via `OTEL_RESOURCE_ATTRIBUTES`
+
+Any additional attributes your organization requires can be injected at deploy time using the **standard OTEL environment variable** — no code changes needed:
+
+```dotenv
+OTEL_RESOURCE_ATTRIBUTES=team.name=platform,app.tier=backend,region=us-east-1,cost.center=eng-42
+```
+
+The format is `key1=value1,key2=value2,...` (comma-separated). These appear on every span and metric in Splunk.
+
+#### How it works in code
+
+```rust
+fn build_resource(config: &ExportConfig) -> Resource {
+    let mut builder = Resource::builder()
+        .with_attribute(KeyValue::new(
+            "service.name",
+            std::env::var("OTEL_SERVICE_NAME")
+                .unwrap_or_else(|_| SERVICE_NAME.to_string()),
+        ))
+        .with_attribute(KeyValue::new("service.version", SERVICE_VERSION))
+        .with_attribute(KeyValue::new(
+            "deployment.environment",
+            config.environment.clone(),
+        ));
+
+    // Parse OTEL_RESOURCE_ATTRIBUTES (standard OTEL env var)
+    if let Ok(attrs) = std::env::var("OTEL_RESOURCE_ATTRIBUTES") {
+        for pair in attrs.split(',') {
+            if let Some((key, value)) = pair.trim().split_once('=') {
+                builder = builder.with_attribute(
+                    KeyValue::new(key.trim().to_string(), value.trim().to_string())
+                );
+            }
+        }
+    }
+
+    builder.build()
+}
+```
+
+#### Example: common required attributes
+
+```dotenv
+# Org-required attributes
+OTEL_RESOURCE_ATTRIBUTES=team.name=platform,app.tier=backend,business.unit=engineering
+
+# Override service name at deploy time
+OTEL_SERVICE_NAME=dice-server-prod
+
+# Splunk APM environment grouping
+OTEL_ENVIRONMENT=production
+```
+
+> **Best Practice:** Define `OTEL_RESOURCE_ATTRIBUTES` in your deployment config (docker-compose, Kubernetes manifests, etc.) — not hardcoded in source. This way the same binary works across environments with different attribute sets.
+
+### Step 4: Add Custom Metrics
 
 Define metric instruments using the `Meter`:
 
@@ -267,7 +395,7 @@ fn init_metrics(meter: &Meter) -> Metrics {
 - Use `Histogram` for distributions (latency, roll values) — Splunk auto-generates p50/p90/p99
 - Keep attribute cardinality low (e.g., `sides` is bounded 2–100)
 
-### Step 4: Instrument Request Handlers with Spans
+### Step 5: Instrument Request Handlers with Spans
 
 ```rust
 use opentelemetry::trace::{Span, SpanKind, Status, Tracer};
@@ -303,14 +431,27 @@ async fn handle(req: Request<hyper::body::Incoming>) -> Result<Response<Full<Byt
 
 **Pattern:** One `Server` span per request + child `Internal` spans for business logic.
 
-### Step 5: Environment Configuration
+### Step 6: Environment Configuration
 
 The Rust app reads from the root `.env` file (shared with all labs):
+
+**Collector gateway mode:**
+
+```dotenv
+# ../../.env (repo root)
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318
+OTEL_ENVIRONMENT=production
+OTEL_RESOURCE_ATTRIBUTES=team.name=platform,app.tier=backend
+```
+
+**Direct Splunk ingest mode:**
 
 ```dotenv
 # ../../.env (repo root)
 SPLUNK_ACCESS_TOKEN=<your-ingest-token>
 SPLUNK_REALM=us1
+OTEL_ENVIRONMENT=demo
+OTEL_RESOURCE_ATTRIBUTES=team.name=platform,app.tier=backend
 ```
 
 The app loads this in `main()`:
@@ -324,7 +465,7 @@ if root_env.exists() {
 }
 ```
 
-### Step 6: Build, Run, and Validate
+### Step 7: Build, Run, and Validate
 
 ```bash
 cd labs/rust-dice-server
@@ -375,17 +516,21 @@ After 30–60 seconds, check Splunk APM for the service `rust-dice-server`.
 
 2. **Set `deployment.environment` on your Resource.** Splunk APM uses this to separate dev/staging/prod views.
 
-3. **Use `BatchSpanProcessor` (not simple).** The `with_batch_exporter` method avoids blocking the request handler thread on export.
+3. **Use `OTEL_RESOURCE_ATTRIBUTES` for org-required attributes.** Define them in deployment config (not source code) so the same binary works across environments.
 
-4. **Use `OnceLock` for global tracer/meter access.** Rust's zero-cost abstraction for lazy static initialization — safe and efficient.
+4. **Prefer a collector gateway in production.** It centralizes auth, adds retry/buffering, and lets you transform telemetry without redeploying apps.
 
-5. **Keep metric attribute cardinality bounded.** The `sides` attribute is clamped to 2–100. Avoid unbounded strings as metric attributes.
+5. **Use `BatchSpanProcessor` (not simple).** The `with_batch_exporter` method avoids blocking the request handler thread on export.
 
-6. **Histogram for latency and distributions.** Splunk auto-generates p50, p90, p99 percentile breakdowns from Histogram data.
+6. **Use `OnceLock` for global tracer/meter access.** Rust's zero-cost abstraction for lazy static initialization — safe and efficient.
 
-7. **Don't record request/response bodies in span attributes.** They can contain PII and bloat trace storage.
+7. **Keep metric attribute cardinality bounded.** The `sides` attribute is clamped to 2–100. Avoid unbounded strings as metric attributes.
 
-8. **Clone `Resource` for reuse.** Both `TracerProvider` and `MeterProvider` need the same resource — clone it rather than rebuilding.
+8. **Histogram for latency and distributions.** Splunk auto-generates p50, p90, p99 percentile breakdowns from Histogram data.
+
+9. **Don't record request/response bodies in span attributes.** They can contain PII and bloat trace storage.
+
+10. **Clone `Resource` for reuse.** Both `TracerProvider` and `MeterProvider` need the same resource — clone it rather than rebuilding.
 
 ### Dashboarding in Splunk O11y Cloud
 
@@ -418,7 +563,7 @@ After 30–60 seconds, check Splunk APM for the service `rust-dice-server`.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| No service in Splunk APM | Token or realm wrong | Check `SPLUNK_ACCESS_TOKEN` and `SPLUNK_REALM` in `../../.env`. Look for the ⚠️ warning at startup. |
+| No service in Splunk APM | Token or realm wrong (direct mode), or collector not forwarding | **Direct:** Check `SPLUNK_ACCESS_TOKEN` and `SPLUNK_REALM` in `../../.env`. **Collector:** Check collector config and logs. |
 | `Failed to create OTLP span exporter` | Missing TLS certs or network issue | Ensure `ca-certificates` is installed. Check firewall rules for `ingest.{realm}.signalfx.com:443`. |
 | Spans appear but no metrics | Metric exporter misconfigured | Verify metrics endpoint: `/v2/datapoint/otlp` (not `/v2/trace/otlp`) |
 | Metrics appear but no traces | Trace exporter misconfigured | Verify traces endpoint: `/v2/trace/otlp` (not `/v2/datapoint/otlp`) |
@@ -430,21 +575,27 @@ After 30–60 seconds, check Splunk APM for the service `rust-dice-server`.
 
 ## Key Gotchas and Lessons Learned
 
-1. **Use OTLP/HTTP, not gRPC, for Splunk direct ingest.** The Splunk O11y Cloud ingest endpoints do not implement the OTLP/gRPC service. Use the `http-proto` feature of `opentelemetry-otlp`.
+1. **Use OTLP/HTTP, not gRPC, for Splunk direct ingest.** The Splunk O11y Cloud ingest endpoints do not implement the OTLP/gRPC service. Use the `http-proto` feature of `opentelemetry-otlp`. (When using a collector, the collector can accept either.)
 
-2. **Splunk ingest URLs include a path.**
+2. **Splunk ingest URLs include a path** (direct mode only).
    - Traces: `https://ingest.{realm}.signalfx.com/v2/trace/otlp`
    - Metrics: `https://ingest.{realm}.signalfx.com/v2/datapoint/otlp`
 
-3. **All OTEL crate versions must match.** Using `opentelemetry 0.28` with `opentelemetry_sdk 0.27` will cause trait mismatch compile errors. Pin all `opentelemetry*` crates to the same minor version.
+3. **Collector gateway uses standard OTLP paths.**
+   - `OTEL_EXPORTER_OTLP_ENDPOINT` + `/v1/traces` and `/v1/metrics`
+   - No `X-SF-TOKEN` header needed — configure auth in the collector.
 
-4. **`OnceLock` is the idiomatic way to store global tracer/meter in Rust.** It avoids `unsafe` and is zero-cost after initialization.
+4. **Use `OTEL_RESOURCE_ATTRIBUTES` for deploy-time attributes.** Don't hardcode team names, regions, or cost centers in source. Set them in your deployment env so the same binary adapts to any environment.
 
-5. **Rust's async span model requires care.** Spans in `opentelemetry` Rust are not automatically associated with async contexts like in Python. Create spans explicitly in each handler.
+5. **All OTEL crate versions must match.** Using `opentelemetry 0.28` with `opentelemetry_sdk 0.27` will cause trait mismatch compile errors. Pin all `opentelemetry*` crates to the same minor version.
 
-6. **Docker builds need `ca-certificates`.** The OTLP/HTTP exporter uses TLS to connect to Splunk. In slim Docker images, install `ca-certificates` or the export will fail silently.
+6. **`OnceLock` is the idiomatic way to store global tracer/meter in Rust.** It avoids `unsafe` and is zero-cost after initialization.
 
-7. **Never commit `.env` files.** Always use `.env.example` with placeholder values and add `.env` to `.gitignore`.
+7. **Rust's async span model requires care.** Spans in `opentelemetry` Rust are not automatically associated with async contexts like in Python. Create spans explicitly in each handler.
+
+8. **Docker builds need `ca-certificates`.** The OTLP/HTTP exporter uses TLS to connect to Splunk. In slim Docker images, install `ca-certificates` or the export will fail silently.
+
+9. **Never commit `.env` files.** Always use `.env.example` with placeholder values and add `.env` to `.gitignore`.
 
 ---
 
